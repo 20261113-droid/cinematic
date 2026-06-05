@@ -316,7 +316,7 @@ app.get("/api/theaters", (req, res) => {
   res.json(CINEMAS);
 });
 
-// Route: Get Active Box Office List (Gemini Grounded or Cached Fallback)
+// Route: Get Active Box Office List (KOFIC API with fallback and caching)
 app.get("/api/boxoffice", async (req, res) => {
   const yesterdayStr = getYesterdayDateString();
 
@@ -339,82 +339,180 @@ app.get("/api/boxoffice", async (req, res) => {
     return res.json(cachedData);
   }
 
-  // If Gemini client exists, let's call it with Search Grounding
-  if (ai) {
-    try {
-      console.log(`Querying Gemini with search grounding for Box Office on date: ${yesterdayStr}...`);
+  const koficKey = process.env.KOFIC_API_KEY || "f365135e7f2d47f2344d5a9878c1c022";
+  const targetDt = yesterdayStr.replace(/-/g, "");
+
+  try {
+    console.log(`Querying KOFIC API for box office list for date: ${targetDt}...`);
+    const koficUrl = `http://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchDailyBoxOfficeList.json?key=${koficKey}&targetDt=${targetDt}`;
+    
+    const koficRes = await fetch(koficUrl);
+    if (!koficRes.ok) {
+      throw new Error(`KOFIC API responded with status ${koficRes.status}`);
+    }
+    
+    const koficData: any = await koficRes.json();
+    const dailyList = koficData?.boxOfficeResult?.dailyBoxOfficeList;
+    
+    if (Array.isArray(dailyList) && dailyList.length > 0) {
+      console.log(`Successfully fetched ${dailyList.length} movies from KOFIC API.`);
       
-      const prompt = `Please search for the official actual South Korea Box Office ranking (KOBIS / official weekly or daily summary) exactly for the date "${yesterdayStr}" or the absolute most recent daily box office data available for the week of June 2026 / late May 2026.
-Return an accurate list of top 10 movies.
-Format the final response purely as a RAW JSON array (no markdown code blocks, do not surround with \`\`\`json, do not write anything else, just the JSON).
-The response MUST match this precise TypeScript Schema:
-Array<{
-  "rank": number,
-  "rankInten": string, // "New", "+1", "-2", "0"
-  "title": string, // Movie Korean title
-  "openDt": string, // YYYY-MM-DD
-  "audiCnt": number, // yesterday's audience count
-  "audiAcc": number, // cumulative audience
-  "director": string, // Lead director Korean name
-  "actors": string[], // Main cast array in Korean
-  "genre": string, // Genre tag(s)
-  "showTm": string, // "112분"
-  "synopsis": string, // Short synopsis in Korean (2-3 sentences)
-  "rating": number, // Baseline official/audience rating out of 10 (e.g. 8.5)
-  "posterUrl": string, // High quality, realistic placeholder image URL from Unsplash reflecting the movie nature, e.g. "https://images.unsplash.com/photo-..." - provide a specific appropriate unsplash movie-related URL.
-  "trailerId": string // Real 11-char Youtube Video ID or key movie trailer term
-}>
-
-Search for real current listings like '범죄도시', '인사이드 아웃 2', '원더랜드' or whichever are truly running to fill the data authentically!`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: prompt,
-        config: {
-          systemInstruction: "You are an expert movie analyst that returns precise box office statistics in South Korea parsed cleanly into JSON. You always use googleSearch grounding for absolute accuracy. Never output markdown code block ticks.",
-          tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json"
-        },
-      });
-
-      const responseText = response.text ? response.text.trim() : "";
-      console.log("Gemini Grounded Response received:", responseText.substring(0, 150) + "...");
-
-      // Clean markdown indicators if model accidentally returned them
-      let cleanedJson = responseText;
-      if (cleanedJson.startsWith("```")) {
-        cleanedJson = cleanedJson.replace(/^```(json)?\s*/i, "").replace(/\s*```$/, "");
-      }
-      cleanedJson = cleanedJson.trim();
-
-      const moviesList = JSON.parse(cleanedJson);
-
-      if (Array.isArray(moviesList) && moviesList.length > 0) {
-        // Double check formatting validation
-        moviesList.forEach((mv, idx) => {
-          if (!mv.rank) mv.rank = idx + 1;
-          if (!mv.posterUrl || !mv.posterUrl.startsWith("http")) {
-            // Apply stunning unsplash cinematics based on genre or title
-            mv.posterUrl = `https://images.unsplash.com/photo-${1500000000000 + (idx * 50000)}?w=600&q=80`;
+      // Fetch details in parallel with low timeout to prevent stalling
+      const moviePromises = dailyList.map(async (item: any) => {
+        const rank = parseInt(item.rank, 10);
+        let rankInten = "0";
+        if (item.rankOldAndNew === "NEW") {
+          rankInten = "New";
+        } else {
+          const intensity = parseInt(item.rankInten, 10);
+          if (intensity > 0) rankInten = `+${intensity}`;
+          else if (intensity < 0) rankInten = `${intensity}`;
+          else rankInten = "0";
+        }
+        
+        const title = item.movieNm;
+        const openDt = item.openDt || "2026-06-01";
+        const audiCnt = parseInt(item.audiCnt, 10) || 0;
+        const audiAcc = parseInt(item.audiAcc, 10) || 0;
+        const movieCd = item.movieCd;
+        
+        // Initialize basic details
+        let director = "";
+        let actors: string[] = [];
+        let genre = "";
+        let showTm = "120분";
+        
+        // Detailed fetch from KOFIC searchMovieInfo
+        try {
+          const detailUrl = `http://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieInfo.json?key=${koficKey}&movieCd=${movieCd}`;
+          // 2.5 second timeout on detail fetches so we don't stall the server
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
+          
+          const detailRes = await fetch(detailUrl, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          
+          if (detailRes.ok) {
+            const detailData: any = await detailRes.json();
+            const movieInfo = detailData?.movieInfoResult?.movieInfo;
+            if (movieInfo) {
+              if (movieInfo.directors && movieInfo.directors.length > 0) {
+                director = movieInfo.directors[0].peopleNm;
+              }
+              if (movieInfo.actors && movieInfo.actors.length > 0) {
+                actors = movieInfo.actors.slice(0, 4).map((a: any) => a.peopleNm);
+              }
+              if (movieInfo.genres && movieInfo.genres.length > 0) {
+                genre = movieInfo.genres.map((g: any) => g.genreNm).join(", ");
+              }
+              if (movieInfo.showTm) {
+                showTm = `${movieInfo.showTm}분`;
+              }
+            }
           }
-        });
-
-        // Write to cache file
+        } catch (detailErr) {
+          console.warn(`Failed to fetch movie detail for ${title}:`, detailErr);
+        }
+        
+        // Core fallback Unsplash images structured creatively for aesthetics
+        const landscapeKeywords = [
+          "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&q=80", // Film can
+          "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=600&q=80", // Theater empty seats
+          "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=600&q=80", // Neon space
+          "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=600&q=80", // Mysterious smoke beam
+          "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=600&q=80", // Glowing internet wire
+          "https://images.unsplash.com/photo-1500485035595-cbe6f645feb1?w=600&q=80", // Bright orange sky
+          "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=600&q=80", // Flare bokeh
+          "https://images.unsplash.com/photo-1517649763962-0c623066013b?w=600&q=80", // Red track sports
+          "https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=600&q=80", // Vintage film bokeh
+          "https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?w=600&q=80"  // Deep shadow red background
+        ];
+        
+        // Find if this is in our original default movies list to reuse premium visual details
+        const defaultMatch = DEFAULT_MOVIES.find(
+          dm => dm.title === title || title.includes(dm.title) || dm.title.includes(title)
+        );
+        
+        let synopsis = "";
+        let rating = 8.0;
+        let posterUrl = "";
+        let trailerId = "";
+        
+        if (defaultMatch) {
+          synopsis = defaultMatch.synopsis;
+          rating = defaultMatch.rating;
+          posterUrl = defaultMatch.posterUrl;
+          trailerId = defaultMatch.trailerId;
+          if (!director) director = defaultMatch.director;
+          if (actors.length === 0) actors = defaultMatch.actors;
+          if (!genre) genre = defaultMatch.genre;
+          if (showTm === "120분") showTm = defaultMatch.showTm;
+        } else {
+          // General fallback metadata if not matched
+          const genreStr = genre || "";
+          rating = parseFloat((7.8 + ((rank * 7) % 17) * 0.1).toFixed(1));
+          if (rating > 9.8) rating = 9.2;
+          
+          if (genreStr.includes("액션") || genreStr.includes("범죄") || genreStr.includes("스릴러")) {
+            synopsis = `강렬한 서사와 긴장감 넘치는 전개로 스크린을 장악하는 화제의 액션 스릴러 <${title}>. 압도적인 액션 시퀀스와 치밀한 심리 묘사가 결합되어 한순간도 눈을 뗄 수 없는 몰입감을 선사합니다.`;
+            posterUrl = landscapeKeywords[0];
+          } else if (genreStr.includes("공포") || genreStr.includes("미스터리") || genreStr.includes("오컬트")) {
+            synopsis = `숨막히는 긴장감과 기묘한 사건으로 오감을 극대화하는 웰메이드 미스터리 <${title}>. 관객들의 상상력을 뒤흔들며 서서히 조여드는 서스펜스의 진수를 경험할 수 있는 기대작입니다.`;
+            posterUrl = landscapeKeywords[3];
+          } else if (genreStr.includes("애니메이션") || genreStr.includes("코미디") || genreStr.includes("가족")) {
+            synopsis = `유쾌한 위트와 따뜻한 마음의 여운이 담긴 명품 힐링작 <${title}>. 기상천외한 연출과 통통 튀는 서사 연출로 남녀노소 누구나 웃으며 즐길 수 있는 특별한 즐거움을 전합니다.`;
+            posterUrl = landscapeKeywords[1];
+          } else if (genreStr.includes("SF") || genreStr.includes("판타지") || genreStr.includes("어드벤처")) {
+            synopsis = `창의적인 비주얼과 감동으로 시공간을 초월하는 판타지 SF <${title}>. 미학적인 비주얼 아트워크와 함께 거대한 세계관 속 뜨거운 인간미를 고스란히 담아냈습니다.`;
+            posterUrl = landscapeKeywords[2];
+          } else {
+            synopsis = `영화계를 향한 수많은 찬사 속에 극장가를 뜨겁게 달구고 있는 박스오피스 화제작 <${title}>. 완벽한 캐스팅 시너지와 흡입력 높은 서사로 흥행 열풍을 새롭게 이끌어가고 있습니다.`;
+            posterUrl = landscapeKeywords[(rank * 3) % landscapeKeywords.length];
+          }
+          
+          if (!director) director = "정보 미상";
+          if (actors.length === 0) actors = ["조연 배우 컬렉션"];
+          if (!genre) genre = "드라마, 일반";
+          trailerId = ""; // Triggers client side smart trailer builder
+        }
+        
+        return {
+          rank,
+          rankInten,
+          title,
+          openDt,
+          audiCnt,
+          audiAcc,
+          director,
+          actors,
+          genre,
+          showTm,
+          synopsis,
+          rating,
+          posterUrl,
+          trailerId
+        };
+      });
+      
+      const moviesList = await Promise.all(moviePromises);
+      
+      // Save output to Cache
+      try {
         fs.writeFileSync(CACHE_FILE, JSON.stringify({
           date: yesterdayStr,
           movies: moviesList
         }, null, 2), "utf-8");
-
-        return res.json(moviesList);
+      } catch (cacheWriteErr) {
+        console.error("Cache writing error:", cacheWriteErr);
       }
-    } catch (err) {
-      console.error("Gemini grounding request failed, falling back to default statistics.", err);
+      
+      return res.json(moviesList);
     }
-  } else {
-    console.log("GEMINI_API_KEY is not defined. Serving default historical statistics model cache.");
+  } catch (err) {
+    console.error("KOFIC API flow failed, falling back to local database:", err);
   }
 
-  // Fallback to default blockbusters list
+  // Backup fallback to default movies
   res.json(DEFAULT_MOVIES);
 });
 
