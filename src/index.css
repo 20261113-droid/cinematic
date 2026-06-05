@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Pretendard", system-ui, -apple-system, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+}
+
+/* Custom scrollbar webkit */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #050505;
+}
+::-webkit-scrollbar-thumb {
+  background: #222222;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #dc2626;
+}
+
+/* Fade in class in case backup animation is needed */
+.fade-in-backdrop {
+  background: linear-gradient(180deg, rgba(5,5,5,0.1) 0%, rgba(5,5,5,0.95) 100%);
+}
+
+/* Leaflet maps custom dark styling */
+.leaflet-container {
+  background-color: #050505 !important;
+}
+.leaflet-bar a {
+  background-color: #111111 !important;
+  color: #fff !important;
+  border-color: #222222 !important;
+}
+.leaflet-bar a:hover {
+  background-color: #dc2626 !important;
+}
+.leaflet-popup-content-wrapper {
+  background-color: #0c0c0c !important;
+  color: #f5f5f5 !important;
+  border: 1px solid #222222;
+}
+.leaflet-popup-tip {
+  background-color: #0c0c0c !important;
+}
+
+/* Modern continuous marquee animation */
+@keyframes marquee {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  display: flex;
+  width: max-content;
+  animation: marquee 40s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* Red cinematic pulsers */
+@keyframes glow {
+  0%, 100% {
+    text-shadow: 0 0 4px rgba(220, 38, 38, 0.6), 0 0 12px rgba(220, 38, 38, 0.4);
+  }
+  50% {
+    text-shadow: 0 0 8px rgba(220, 38, 38, 0.9), 0 0 20px rgba(220, 38, 38, 0.7);
+  }
+}
+
+.pulsing-glow {
+  animation: glow 2s infinite ease-in-out;
+}
+

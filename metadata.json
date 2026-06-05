@@ -1,0 +1,6 @@
+{
+  "name": "Korean Box Office",
+  "description": "국내 최신 영화 박스오피스 정보와 영화 상세 분석, 트레일러 감상, 영화관 위치 안내 및 사용자 리뷰를 제공하는 세련된 다크 테마 시네마 웹애플리케이션입니다.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
